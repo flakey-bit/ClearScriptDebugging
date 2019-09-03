@@ -2,7 +2,7 @@
 
 namespace Communicator.Messages
 {
-    public class ScriptParsedEvent
+    public class ScriptParsedEvent : IV8EventParameters
     {
         [JsonProperty("scriptId")]
         public string ScriptId { get; set; }

@@ -12,9 +12,9 @@ namespace Communicator
     internal class MessagePump
     {
         private readonly ClientWebSocket _socket;
-        private readonly V8EngineEvents _events;
+        private readonly IV8EventHandler _events;
 
-        public MessagePump(ClientWebSocket socket, V8EngineEvents events)
+        public MessagePump(ClientWebSocket socket, IV8EventHandler events)
         {
             _socket = socket;
             _events = events;
@@ -27,8 +27,6 @@ namespace Communicator
                 string json = await Receive(token);
                 HandleMessage(json);
             }
-
-            var x = 0;
         }
 
         private async Task<string> Receive(CancellationToken token)
@@ -52,7 +50,7 @@ namespace Communicator
             try
             {
                 var commandResponse = JsonConvert.DeserializeObject<V8CommandResponse>(json);
-                _events.RaiseCommandCompletedEvent(new CommandResponse(commandResponse.RequestId, json));
+                _events.Raise(new CommandResponse(commandResponse.RequestId, json));
                 return;
             }
             catch (JsonSerializationException)
@@ -63,11 +61,11 @@ namespace Communicator
             if (json.Contains("Debugger.paused"))
             {
                 var debuggerPausedEvent = JsonConvert.DeserializeObject<V8DebuggerEvent<DebuggerPausedEvent>>(json);
-                _events.RaiseDebuggerPausedEvent(debuggerPausedEvent.EventParameters);
+                _events.Raise(debuggerPausedEvent.EventParameters);
             } else if (json.Contains("scriptParsed"))
             {
                 var scriptDetails = JsonConvert.DeserializeObject<V8DebuggerEvent<ScriptParsedEvent>>(json);
-                _events.RaiseScriptParsedEvent(scriptDetails.EventParameters);
+                _events.Raise(scriptDetails.EventParameters);
             }
         }
     }

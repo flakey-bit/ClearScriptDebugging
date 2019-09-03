@@ -24,7 +24,7 @@ namespace Communicator
 
                 // First script loaded is from the ClearScript V8ScriptEngine - contains helper functions such as invokeMethod, getStackTrace etc
                 // We don't see that script until we send the Debugger.enable command
-                await communicator.WaitForScriptParsedEventAsync(new CancellationTokenSource(TimeSpan.FromSeconds(5)).Token);
+                await communicator.WaitForEventAsync<ScriptParsedEvent>(new CancellationTokenSource(TimeSpan.FromSeconds(5)).Token);
 
                 // We need to tell V8 that we've assumed they responsibility of the debugger it was waiting for. If we didn't do that
                 // and closed the websocket, the V8 process would remain halted.
@@ -32,19 +32,19 @@ namespace Communicator
 
                 // After resuming the script (runIfWaitingForDebugger) we should get both a ScriptParsed event & a DebuggerPaused event.
                 // This second script is the one we're actually debugging (i.e. the one the 'debugger' statement in it)
-                var scriptParsedEvent = await communicator.WaitForScriptParsedEventAsync(new CancellationTokenSource(TimeSpan.FromSeconds(5)).Token);
+                var scriptParsedEvent = await communicator.WaitForEventAsync<ScriptParsedEvent>(new CancellationTokenSource(TimeSpan.FromSeconds(5)).Token);
                 var commandResult = await communicator.SendCommand("Debugger.getScriptSource", new {scriptId = scriptParsedEvent.ScriptId});
                 var scriptSourceResponse = JsonConvert.DeserializeObject<V8CommandResponse<GetScriptSourceResponse>>(commandResult);
                 Console.Out.WriteLine($"Debugging script: {scriptSourceResponse.Result.ScriptSource}");
 
                 // Break on debugger connection (as requested)
-                await communicator.WaitForDebuggerPausedEventAsync(new CancellationTokenSource(WaitForDebuggerTimeout).Token);
+                await communicator.WaitForEventAsync<DebuggerPausedEvent>(new CancellationTokenSource(WaitForDebuggerTimeout).Token);
 
                 Console.Out.WriteLine("Resuming debugger");
                 await communicator.SendCommand("Debugger.resume");
 
                 // Break on our user breakpoint (debugger keyword)
-                var debuggerPausedEvent = await communicator.WaitForDebuggerPausedEventAsync(new CancellationTokenSource(WaitForDebuggerTimeout).Token);
+                var debuggerPausedEvent = await communicator.WaitForEventAsync<DebuggerPausedEvent>(new CancellationTokenSource(WaitForDebuggerTimeout).Token);
 
                 // Pull out the callFrameId for that frame
                 string callFrameId = debuggerPausedEvent.CallFrames[0].CallFrameId;

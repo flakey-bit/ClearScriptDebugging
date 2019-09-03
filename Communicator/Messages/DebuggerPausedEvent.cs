@@ -2,7 +2,7 @@
 
 namespace Communicator.Messages
 {
-    public class DebuggerPausedEvent
+    public class DebuggerPausedEvent : IV8EventParameters
     {
         [JsonProperty("callFrames")]
         public CallFrame[] CallFrames { get; set; }

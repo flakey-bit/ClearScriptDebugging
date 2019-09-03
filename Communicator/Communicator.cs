@@ -4,21 +4,22 @@ using System.Net.Http.Headers;
 using System.Net.WebSockets;
 using System.Text;
 using System.Threading;
-using System.Threading.Channels;
 using System.Threading.Tasks;
 using Communicator.Messages;
+using System.Collections.Generic;
 using Newtonsoft.Json;
 
 namespace Communicator
 {
-    public class Communicator : IDisposable
+    public class Communicator : ICommunicator, IV8EventHandler, IDisposable
     {
-        private readonly V8EngineEvents _events;
         private readonly string _hostname;
         private readonly int _port;
-        private readonly Channel<DebuggerPausedEvent> _debuggerPausedEventChannel;
-        private readonly Channel<CommandResponse> _commandCompletedEventChannel;
-        private readonly Channel<ScriptParsedEvent> _scriptParsedEventChannel;
+
+        private readonly Dictionary<Type, Queue<object>> _eventBuffer;
+        private readonly object _eventBufferLock = new object();
+        private readonly Dictionary<Type, Queue<object>> _taskCompletionSourcesLookup;
+        private readonly object _taskCompletionSourcesLock = new object();
 
         private ClientWebSocket _socket;
         private int _seq;
@@ -28,26 +29,9 @@ namespace Communicator
         {
             _hostname = hostname;
             _port = port;
-            _events = new V8EngineEvents();
 
-            _debuggerPausedEventChannel = Channel.CreateUnbounded<DebuggerPausedEvent>();
-            _commandCompletedEventChannel = Channel.CreateUnbounded<CommandResponse>();
-            _scriptParsedEventChannel = Channel.CreateUnbounded<ScriptParsedEvent>();
-
-            _events.DebuggerPausedEventHandler += (sender, eventDetails) =>
-            {
-                _debuggerPausedEventChannel.Writer.TryWrite(eventDetails);
-            };
-
-            _events.CommandCompletedEventHandler += (sender, eventDetails) =>
-            {
-                _commandCompletedEventChannel.Writer.TryWrite(eventDetails);
-            };
-
-            _events.ScriptParsedEventHandler += (sender, eventDetails) =>
-            {
-                _scriptParsedEventChannel.Writer.TryWrite(eventDetails);
-            };
+            _eventBuffer = new Dictionary<Type, Queue<object>>();
+            _taskCompletionSourcesLookup = new Dictionary<Type, Queue<object>>();
         }
 
         public async Task Connect(CancellationToken cancellationToken)
@@ -75,7 +59,7 @@ namespace Communicator
 
             await _socket.SendAsync(new ArraySegment<byte>(bytes), WebSocketMessageType.Text, true, CancellationToken.None);
 
-            var commandCompletedEvent = await _commandCompletedEventChannel.Reader.ReadAsync(CancellationToken.None);
+            var commandCompletedEvent = await WaitForEventAsync<CommandResponse>(CancellationToken.None);
             if (payload.Id != commandCompletedEvent.RequestId)
             {
                 throw new Exception("Got unexpected command result back");
@@ -84,16 +68,34 @@ namespace Communicator
             return commandCompletedEvent.RawJson;
         }
 
-        public async Task<DebuggerPausedEvent> WaitForDebuggerPausedEventAsync(CancellationToken token)
+        public Task<TEvent> WaitForEventAsync<TEvent>(CancellationToken token) where TEvent : IV8EventParameters
         {
-            EnsureConnected();
-            return await _debuggerPausedEventChannel.Reader.ReadAsync(token);
-        }
+            var eventType = typeof(TEvent);
 
-        public async Task<ScriptParsedEvent> WaitForScriptParsedEventAsync(CancellationToken token)
-        {
+            // Check for a buffered event, if so use that
+            lock (_eventBufferLock)
+            {
+                if (_eventBuffer.TryGetValue(eventType, out var queuedEvents) && queuedEvents.TryDequeue(out var queuedEvent))
+                {
+                    return Task.FromResult((TEvent)queuedEvent);
+                }
+            }
+
             EnsureConnected();
-            return await _scriptParsedEventChannel.Reader.ReadAsync(token);
+
+            // Create a task completion source for the event
+            var tcs = new TaskCompletionSource<TEvent>(token, TaskCreationOptions.RunContinuationsAsynchronously);
+
+            lock (_taskCompletionSourcesLock)
+            {
+                if (!_taskCompletionSourcesLookup.TryGetValue(eventType, out var sources))
+                {
+                    sources = _taskCompletionSourcesLookup[eventType] = new Queue<object>();
+                }
+                sources.Enqueue(tcs);
+            }
+
+            return tcs.Task;
         }
 
         public async Task Disconnect(CancellationToken cancellationToken)
@@ -114,6 +116,48 @@ namespace Communicator
             catch (Exception)
             {
                 // Ignore
+            }
+        }
+
+        #region Implementation of IV8EventHandler
+
+        // Called from the message pump thread
+        public void Raise<TEvent>(TEvent e) where TEvent : IV8EventParameters
+        {
+            var eventType = typeof(TEvent);
+
+            if (CheckEventTaskCompletion(e))
+            {
+                return;
+            }
+
+            lock (_eventBufferLock)
+            {
+                if (!_eventBuffer.TryGetValue(eventType, out var eventsOfType))
+                {
+                    eventsOfType = _eventBuffer[eventType] = new Queue<object>();
+                }
+
+                eventsOfType.Enqueue(e);
+            }
+        }
+
+        #endregion
+
+        private bool CheckEventTaskCompletion<TEvent>(TEvent e)
+        {
+            var eventType = typeof(TEvent);
+
+            lock (_taskCompletionSourcesLock)
+            {
+                if (_taskCompletionSourcesLookup.TryGetValue(eventType, out var waitingTasks) && waitingTasks.TryDequeue(out var tcs))
+                {
+                    var taskCompletionSource = (TaskCompletionSource<TEvent>)tcs;
+                    taskCompletionSource.SetResult(e);
+                    return true;
+                }
+
+                return false;
             }
         }
 
@@ -142,7 +186,7 @@ namespace Communicator
         private CancellationTokenSource StartMessagePump()
         {
             var cancellationTokenSource = new CancellationTokenSource();
-            var eventPump = new MessagePump(_socket, _events);
+            var eventPump = new MessagePump(_socket, this);
             new Task(() => eventPump.Run(cancellationTokenSource.Token), cancellationTokenSource.Token, TaskCreationOptions.LongRunning).Start();
             return cancellationTokenSource;
         }

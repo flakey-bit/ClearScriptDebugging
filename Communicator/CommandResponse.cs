@@ -1,6 +1,8 @@
-﻿namespace Communicator
+﻿using Communicator.Messages;
+
+namespace Communicator
 {
-    public class CommandResponse
+    public class CommandResponse : IV8EventParameters
     {
         public int RequestId { get; }
         public string RawJson { get; }
