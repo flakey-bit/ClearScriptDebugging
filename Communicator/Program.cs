@@ -17,7 +17,7 @@ namespace Communicator
             {
                 await communicator.Connect(new CancellationTokenSource(WebsocketConnectTimeout).Token);
 
-                // https://chromedevtools.github.io/devtools-protocol/1-2/Debuggerd
+                // https://chromedevtools.github.io/devtools-protocol/1-2/Debugger
 
                 await communicator.SendCommand("Runtime.enable");
                 await communicator.SendCommand("Debugger.enable");
